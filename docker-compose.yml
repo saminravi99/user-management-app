@@ -1,0 +1,99 @@
+version: "3.8"
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: user-management-mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: adminpassword
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: user-management-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./user-management-backend
+      dockerfile: Dockerfile
+    container_name: user-management-backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://admin:adminpassword@mongodb:27017/user-management?authSource=admin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_ACCESS_SECRET: your-super-secret-jwt-access-key-production
+      JWT_REFRESH_SECRET: your-super-secret-jwt-refresh-key-production
+      JWT_ACCESS_EXPIRY: 15m
+      JWT_REFRESH_EXPIRY: 7d
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      OTP_EXPIRY: 300
+      OTP_LENGTH: 6
+      FRONTEND_URL: http://localhost:3000
+      RATE_LIMIT_WINDOW: 15
+      RATE_LIMIT_MAX_REQUESTS: 100
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./user-management-frontend
+      dockerfile: Dockerfile
+    container_name: user-management-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost/api
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: user-management-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - app-network
+
+volumes:
+  mongodb_data:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge
