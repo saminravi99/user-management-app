@@ -1,99 +1,135 @@
 version: "3.8"
 
 services:
+  # MongoDB Database
   mongodb:
     image: mongo:7
-    container_name: user-management-mongodb
-    restart: always
+    container_name: user-mgmt-mongodb
+    restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: adminpassword
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-user_management}
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
     networks:
-      - app-network
+      - backend-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
+  # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: user-management-redis
-    restart: always
+    container_name: user-mgmt-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme}
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     networks:
-      - app-network
+      - backend-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
 
+  # Backend API
   backend:
     build:
       context: ./user-management-backend
       dockerfile: Dockerfile
-    container_name: user-management-backend
-    restart: always
-    ports:
-      - "5000:5000"
+    container_name: user-mgmt-backend
+    restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: 5000
-      MONGODB_URI: mongodb://admin:adminpassword@mongodb:27017/user-management?authSource=admin
+      MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-changeme}@mongodb:27017/${MONGO_DB_NAME:-user_management}?authSource=admin
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      JWT_ACCESS_SECRET: your-super-secret-jwt-access-key-production
-      JWT_REFRESH_SECRET: your-super-secret-jwt-refresh-key-production
-      JWT_ACCESS_EXPIRY: 15m
-      JWT_REFRESH_EXPIRY: 7d
-      SMTP_HOST: smtp.gmail.com
-      SMTP_PORT: 587
-      SMTP_USER: ${SMTP_USER}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      OTP_EXPIRY: 300
-      OTP_LENGTH: 6
-      FRONTEND_URL: http://localhost:3000
-      RATE_LIMIT_WINDOW: 15
-      RATE_LIMIT_MAX_REQUESTS: 100
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-changeme}
+      JWT_ACCESS_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-your-super-secret-refresh-key-change-in-production}
+      JWT_ACCESS_EXPIRY: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-your-email@gmail.com}
+      SMTP_PASSWORD: ${SMTP_PASS:-your-app-password}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
     depends_on:
-      - mongodb
-      - redis
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
-      - app-network
+      - backend-network
+      - frontend-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:5000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
 
+  # Frontend
   frontend:
     build:
       context: ./user-management-frontend
       dockerfile: Dockerfile
-    container_name: user-management-frontend
-    restart: always
-    ports:
-      - "3000:3000"
+    container_name: user-mgmt-frontend
+    restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost/api
-    depends_on:
-      - backend
-    networks:
-      - app-network
-
-  nginx:
-    image: nginx:alpine
-    container_name: user-management-nginx
-    restart: always
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost/api}
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
-      - backend
-      - frontend
+      backend:
+        condition: service_healthy
     networks:
-      - app-network
+      - frontend-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+networks:
+  frontend-network:
+    driver: bridge
+  backend-network:
+    driver: bridge
 
 volumes:
   mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
   redis_data:
-
-networks:
-  app-network:
-    driver: bridge
+    driver: local

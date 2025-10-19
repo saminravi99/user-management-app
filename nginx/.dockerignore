@@ -1,0 +1,24 @@
+# Nginx Docker ignore file
+# Excludes unnecessary files from the Docker build context
+
+# Documentation
+README.md
+*.md
+
+# Git
+.git
+.gitignore
+
+# Editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs (don't include in image, they'll be created at runtime)
+*.log

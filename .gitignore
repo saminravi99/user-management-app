@@ -1,0 +1,73 @@
+# Root level gitignore
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+*.iml
+
+# Build outputs
+dist/
+build/
+out/
+
+# Docker volumes (local data)
+mongodb_data/
+redis_data/
+nginx_logs/
+nginx_cache/
+
+# Temporary files
+*.tmp
+*.temp
+build.log
+
+# CI/CD secrets
+secrets/
+*.pem
+*.key
+*.crt
+
+# Terraform
+terraform/
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Kubernetes
+k8s/
+
+# Coverage
+coverage/
+.nyc_output/
