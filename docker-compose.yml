@@ -1,8 +1,6 @@
 # Docker Compose - User Management Application
 # 5 Services: Nginx, Frontend, Backend, MongoDB, Redis
 
-version: "3.8"
-
 services:
   # ===========================================
   # NGINX - Reverse Proxy
@@ -83,19 +81,19 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      MONGODB_URI: mongodb://mongodb:27017/user-management
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-change-this-password}@mongodb:27017/user-management?authSource=admin
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      JWT_SECRET: ${JWT_SECRET:-change-this-secret-in-production}
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
-      EMAIL_HOST: ${EMAIL_HOST:-smtp.gmail.com}
-      EMAIL_PORT: ${EMAIL_PORT:-587}
-      EMAIL_USER: ${EMAIL_USER}
-      EMAIL_PASSWORD: ${EMAIL_PASSWORD}
-      EMAIL_FROM: ${EMAIL_FROM:-noreply@usermanagement.com}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
-      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-10}
-      OTP_EXPIRY_MINUTES: ${OTP_EXPIRY_MINUTES:-5}
+      JWT_ACCESS_SECRET: ${JWT_SECRET:-your-super-secret-jwt-access-key-minimum-32-characters-long-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-your-super-secret-jwt-refresh-key-minimum-32-characters-long-change-me}
+      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
+      SMTP_HOST: ${EMAIL_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${EMAIL_PORT:-587}
+      SMTP_USER: ${EMAIL_USER:-test@example.com}
+      SMTP_PASSWORD: ${EMAIL_PASSWORD:-change-this-password}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      ALLOWED_ORIGINS: ${CORS_ORIGIN:-http://localhost}
     depends_on:
       mongodb:
         condition: service_healthy
