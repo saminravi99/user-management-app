@@ -1,0 +1,102 @@
+name: Quick Deploy
+
+# Manual deployment trigger for emergency fixes
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to deploy (all/backend/frontend/nginx)"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - backend
+          - frontend
+          - nginx
+
+jobs:
+  quick-deploy:
+    name: Quick Deploy to Azure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push selected service
+        run: |
+          SERVICE="${{ github.event.inputs.service }}"
+          ACR_SERVER="${{ secrets.ACR_NAME }}.azurecr.io"
+
+          build_and_push() {
+            local service=$1
+            local dir=$2
+            echo "🔨 Building $service..."
+            cd $dir
+            docker build -t $ACR_SERVER/$service:latest .
+            docker push $ACR_SERVER/$service:latest
+            cd -
+          }
+
+          if [ "$SERVICE" == "all" ]; then
+            build_and_push "backend" "./user-management-backend"
+            build_and_push "frontend" "./user-management-frontend"
+            build_and_push "nginx" "./nginx"
+          elif [ "$SERVICE" == "backend" ]; then
+            build_and_push "backend" "./user-management-backend"
+          elif [ "$SERVICE" == "frontend" ]; then
+            build_and_push "frontend" "./user-management-frontend"
+          elif [ "$SERVICE" == "nginx" ]; then
+            build_and_push "nginx" "./nginx"
+          fi
+
+      - name: Deploy to VM
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          SERVICE="${{ github.event.inputs.service }}"
+
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.VM_USERNAME }}@${{ secrets.VM_HOST }} << ENDSSH
+              set -e
+              cd ~/app
+              
+              echo "📥 Logging into ACR..."
+              az login --identity
+              az acr login --name ${{ secrets.ACR_NAME }}
+              
+              if [ "$SERVICE" == "all" ]; then
+                echo "🔄 Deploying all services..."
+                docker-compose pull
+                docker-compose down
+                docker-compose up -d
+              else
+                echo "🔄 Deploying $SERVICE only..."
+                docker-compose pull $SERVICE
+                docker-compose up -d --force-recreate $SERVICE
+                docker-compose restart nginx
+              fi
+              
+              sleep 20
+              
+              echo "✅ Deployment complete!"
+              docker-compose ps
+          ENDSSH
+
+          rm -f ~/.ssh/deploy_key
+
+      - name: Deployment Summary
+        run: |
+          echo "✅ Quick deployment completed!"
+          echo "🎯 Service: ${{ github.event.inputs.service }}"
+          echo "🌐 URL: http://${{ secrets.VM_HOST }}"
