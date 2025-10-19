@@ -31,7 +31,16 @@ jobs:
 
       - name: Install backend dependencies
         working-directory: ./user-management-backend
-        run: npm ci
+        run: |
+          echo "Listing backend files..."
+          ls -la
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            echo "Using npm ci"
+            npm ci
+          else
+            echo "No lockfile found. Running npm install"
+            npm install
+          fi
 
       - name: Run backend linting
         working-directory: ./user-management-backend
@@ -61,7 +70,16 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ./user-management-frontend
-        run: npm ci
+        run: |
+          echo "Listing frontend files..."
+          ls -la
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            echo "Using npm ci"
+            npm ci
+          else
+            echo "No lockfile found. Running npm install"
+            npm install
+          fi
 
       - name: Build frontend
         working-directory: ./user-management-frontend
