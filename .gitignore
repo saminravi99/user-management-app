@@ -1,1 +1,41 @@
 .env
+# Node modules
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+build/
+.next/
+**/.next/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
+
+# Testing
+coverage/
+.nyc_output/
+
+# Documentation and setup scripts (keep local only)
+SUBMODULE-QUICK-START.md
+SUBMODULE-SETUP-GUIDE.md
+CI-CD-SETUP-GUIDE.md
+CI-CD-COMPLETE-SETUP.md
+setup-submodules.sh
+submodule-commands.sh
+get-github-secrets.sh
+github-secrets.txt
