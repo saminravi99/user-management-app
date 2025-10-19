@@ -1,6 +1,6 @@
 name: Quick Deploy
 
-# Manual deployment trigger for emergency fixes
+# Manual deployment trigger for emergency fixes.
 on:
   workflow_dispatch:
     inputs:
