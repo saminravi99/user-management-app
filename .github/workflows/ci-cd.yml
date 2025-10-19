@@ -102,7 +102,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_TOKEN }}
 
-      - name: Log in to Azure Container Registry
+      - name: Log in to Azure Container Registry (admin creds)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.ACR_LOGIN_SERVER }}
@@ -147,12 +147,24 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_TOKEN }}
+      - name: Check VM secrets
+        id: vmsecrets
+        run: |
+          HAVE_KEY=$([ -n "${{ secrets.VM_SSH_PRIVATE_KEY }}" ] && echo true || echo false)
+          HAVE_HOST=$([ -n "${{ secrets.VM_HOST }}" ] && echo true || echo false)
+          HAVE_USER=$([ -n "${{ secrets.VM_USERNAME }}" ] && echo true || echo false)
+          if $HAVE_KEY && $HAVE_HOST && $HAVE_USER; then
+            echo "have_vm=true" >> $GITHUB_OUTPUT
+          else
+            echo "have_vm=false" >> $GITHUB_OUTPUT
+          fi
       - name: Sync and init submodules
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive
 
       - name: Setup SSH key
+        if: steps.vmsecrets.outputs.have_vm == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
@@ -160,6 +172,7 @@ jobs:
           ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy to VM
+        if: steps.vmsecrets.outputs.have_vm == 'true'
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USERNAME }}
@@ -196,6 +209,7 @@ jobs:
           ENDSSH
 
       - name: Verify Deployment
+        if: steps.vmsecrets.outputs.have_vm == 'true'
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USERNAME }}
@@ -221,7 +235,12 @@ jobs:
 
       - name: Cleanup SSH key
         if: always()
-        run: rm -f ~/.ssh/deploy_key
+        run: |
+          rm -f ~/.ssh/deploy_key || true
+      - name: Skip notice (no VM secrets)
+        if: steps.vmsecrets.outputs.have_vm != 'true'
+        run: |
+          echo "Skipping VM deploy: VM secrets not configured.\nAdd VM_SSH_PRIVATE_KEY, VM_HOST, VM_USERNAME to enable."
 
   # Job 5: Send Notification (Optional)
   notify:
