@@ -1,0 +1,6 @@
+[submodule "user-management-frontend"]
+	path = user-management-frontend
+	url = https://github.com/saminravi99/user-management-frontend.git
+[submodule "user-management-backend"]
+	path = user-management-backend
+	url = https://github.com/saminravi99/user-management-backend.git
