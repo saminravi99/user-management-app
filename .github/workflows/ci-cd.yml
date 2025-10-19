@@ -1,39 +1,136 @@
+################################################################################
+# CI/CD PIPELINE FOR USER MANAGEMENT APPLICATION
+#
+# WHY: Automated testing and deployment pipeline ensures code quality and
+#      rapid, reliable deployments without manual intervention
+#
+# WHAT: This GitHub Actions workflow:
+#       - Tests backend code (linting, unit tests)
+#       - Builds frontend (verifies no build errors)
+#       - Builds Docker images and pushes to Azure Container Registry
+#       - Deploys to Azure VM via SSH
+#       - Sends deployment notifications
+#
+# HOW: Triggered automatically when:
+#      - Code is pushed to main/master branch (full pipeline)
+#      - Pull request is opened (tests only, no deployment)
+#
+# WHERE: Runs on GitHub's cloud runners (ubuntu-latest)
+#        Deploys to your Azure VM
+#
+# WHEN: Every push to main branch triggers full deployment
+#       Pull requests only run tests (safe, no production changes)
+#
+# WORKFLOW STAGES:
+# 1. Backend Tests (lint + unit tests)
+# 2. Frontend Build (verify Next.js builds successfully)
+# 3. Build & Push (create Docker images, push to ACR) - main branch only
+# 4. Deploy (SSH to VM, pull images, restart containers) - main branch only
+# 5. Notify (report success/failure)
+################################################################################
+
 name: CI/CD Pipeline
 
+################################################################################
+# TRIGGERS - When does this workflow run?
+################################################################################
 on:
   push:
     branches: [main, master]
+    # Explanation: Run when code is pushed to main or master branch
+    # This is your production branch - any push here triggers deployment
+    # Use case: Developer merges PR → auto-deploy to production
+
   pull_request:
     branches: [main, master]
+    # Explanation: Run when someone opens/updates a Pull Request to main/master
+    # Tests code BEFORE merging (catches issues early)
+    # Does NOT deploy (only runs tests, builds don't get pushed)
+    # Use case: Developer opens PR → tests run automatically → can't merge if tests fail
 
+################################################################################
+# ENVIRONMENT VARIABLES - Available to all jobs in this workflow
+################################################################################
 env:
   ACR_NAME: ${{ secrets.ACR_NAME }}
-  ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
+  # Explanation: Azure Container Registry name (e.g., "myregistry")
+  # Stored as GitHub secret for security (Settings → Secrets → Actions)
+  # Used to construct full registry URL below
 
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
+  # Explanation: Full ACR URL (e.g., "myregistry.azurecr.io")
+  # Docker images will be pushed here with format:
+  # myregistry.azurecr.io/backend:latest
+  # myregistry.azurecr.io/frontend:latest
+  # myregistry.azurecr.io/nginx:latest
+
+################################################################################
+# JOBS - Individual tasks that run in parallel or sequence
+################################################################################
 jobs:
-  # Job 1: Run Backend Tests
+  ############################################################################
+  # JOB 1: BACKEND TESTS
+  # Purpose: Verify backend code quality before deployment
+  ############################################################################
   backend-tests:
     name: Backend Tests
-    runs-on: ubuntu-latest
+    # Human-readable name shown in GitHub Actions UI
 
+    runs-on: ubuntu-latest
+    # Explanation: Use GitHub's Ubuntu runner (virtual machine)
+    # ubuntu-latest = Ubuntu 22.04 (as of 2024)
+    # Includes: Node.js, Docker, Git, common build tools
+    # Free for public repos, limited minutes for private repos
+
+    ########################################################################
+    # STEPS - Sequential actions for this job
+    ########################################################################
     steps:
       - name: Checkout code (with submodules)
         uses: actions/checkout@v4
+        # Explanation: Download your repository code to the runner
+        # "uses:" means run a pre-built action from GitHub Marketplace
+        # actions/checkout@v4 = official GitHub action for cloning repos
+
         with:
           submodules: recursive
+          # Explanation: Also clone Git submodules
+          # Your project structure: main repo → contains frontend/backend as submodules
+          # "recursive" = if submodules have submodules, clone those too
+
           fetch-depth: 0
+          # Explanation: Clone entire Git history (not just latest commit)
+          # fetch-depth: 0 = all commits
+          # fetch-depth: 1 = only latest commit (shallow clone, faster but limited)
+          # Why full history: Some tools need commit history (versioning, changelogs)
+
           token: ${{ secrets.SUBMODULES_TOKEN }}
+          # Explanation: Personal Access Token for accessing private submodules
+          # If your frontend/backend repos are private, need authentication
+          # Created in GitHub: Settings → Developer settings → Personal access tokens
+          # Stored as secret: Repository Settings → Secrets → SUBMODULES_TOKEN
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
+        # Explanation: Install Node.js on the runner
+        # Without this, Node.js commands (npm, node) won't work
+
         with:
           node-version: "20"
+          # Install Node.js version 20 (LTS, same as Dockerfiles)
+          # Consistency matters: same version locally, CI, and production
 
       - name: Install backend dependencies
         working-directory: ./user-management-backend
+        # Explanation: Run this step's commands inside backend directory
+        # Without this, runner would be in repo root
+
         run: |
           echo "Listing backend files..."
           ls -la
+          # List files for debugging (visible in workflow logs)
+          # Helps diagnose issues: "Why can't it find package.json?"
+
           if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
             echo "Using npm ci"
             npm ci
@@ -41,19 +138,44 @@ jobs:
             echo "No lockfile found. Running npm install"
             npm install
           fi
+        # Explanation: Smart dependency installation
+        # Check if lockfile exists:
+        # - If YES: npm ci (faster, reproducible, deletes node_modules first)
+        # - If NO: npm install (generates new lockfile)
+        #
+        # Why this matters:
+        # npm ci requires lockfile (fails without it)
+        # This script handles both cases gracefully
 
       - name: Run backend linting
         working-directory: ./user-management-backend
         run: npm run lint || true
+        # Explanation: Run ESLint to check code style/quality
+        # "npm run lint" executes script from package.json: "lint": "eslint ..."
+        # "|| true" means: if linting fails, don't stop the workflow
+        # Why: Linting warnings shouldn't block deployment (developer discretion)
+        # Change to "npm run lint" (without || true) to enforce strict linting
 
       - name: Run backend tests
         working-directory: ./user-management-backend
         run: npm test || echo "No tests configured yet"
+        # Explanation: Run Jest unit tests
+        # "npm test" executes: "test": "jest" from package.json
+        # "|| echo" means: if no tests exist, just print message (don't fail)
+        #
+        # For production: Remove "|| echo..." to make tests mandatory
+        # run: npm test
+        # This ensures code with failing tests can't be deployed
 
-  # Job 2: Build Frontend
+  ############################################################################
+  # JOB 2: FRONTEND BUILD TEST
+  # Purpose: Verify Next.js builds successfully (catches TypeScript errors,
+  #          missing dependencies, build configuration issues)
+  ############################################################################
   frontend-build:
     name: Frontend Build Test
     runs-on: ubuntu-latest
+    # Runs in parallel with backend-tests (faster overall pipeline)
 
     steps:
       - name: Checkout code (with submodules)
@@ -62,14 +184,18 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_TOKEN }}
+        # Same checkout process as backend job
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+        # Install Node.js 20 (same version as backend)
 
       - name: Install frontend dependencies
         working-directory: ./user-management-frontend
+        # Switch to frontend directory
+
         run: |
           echo "Listing frontend files..."
           ls -la
@@ -80,19 +206,59 @@ jobs:
             echo "No lockfile found. Running npm install"
             npm install
           fi
+        # Same smart installation logic as backend
 
       - name: Build frontend
         working-directory: ./user-management-frontend
         run: npm run build
+        # Explanation: Build Next.js for production
+        # "npm run build" executes: "build": "next build" from package.json
+        #
+        # What this does:
+        # 1. Compiles TypeScript to JavaScript
+        # 2. Bundles React components
+        # 3. Optimizes images
+        # 4. Generates static pages
+        # 5. Creates standalone output (as configured in next.config)
+        #
+        # This catches errors like:
+        # - TypeScript type errors
+        # - Missing imports
+        # - Invalid JSX syntax
+        # - Build configuration issues
+        #
+        # If build fails here, deployment won't happen (prevents broken code)
+
         env:
           NEXT_PUBLIC_API_URL: /api
+          # Explanation: Environment variable for Next.js build
+          # NEXT_PUBLIC_ prefix = accessible in browser code
+          # Must be set at BUILD TIME (not runtime) for Next.js
+          # Value "/api" = relative URL (works for any domain)
 
-  # Job 3: Build and Push Docker Images (only on main/master branch)
+  ############################################################################
+  # JOB 3: BUILD AND PUSH DOCKER IMAGES
+  # Purpose: Create production Docker images and upload to Azure Container Registry
+  ############################################################################
   build-and-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
+
     needs: [backend-tests, frontend-build]
+    # Explanation: Wait for tests to pass before building images
+    # "needs:" creates job dependency (sequential execution)
+    # This job won't run if backend-tests OR frontend-build fails
+    # Why: No point building/deploying broken code
+
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    # Explanation: Only run on pushes to main/master branch
+    # "github.event_name == 'push'" = not a pull request
+    # "github.ref == 'refs/heads/main'" = pushed to main branch
+    #
+    # Result:
+    # - Pull Request: Tests run, but NO build/push/deploy (safe)
+    # - Push to main: Full pipeline including deployment
+    # - Push to other branch: Tests run, but NO build/push/deploy
 
     steps:
       - name: Checkout code (with submodules)
@@ -104,10 +270,27 @@ jobs:
 
       - name: Log in to Azure Container Registry (admin creds)
         uses: docker/login-action@v3
+        # Explanation: Authenticate with Azure Container Registry
+        # Without login, docker push would fail with "unauthorized" error
+        # docker/login-action = official Docker action for registry authentication
+
         with:
           registry: ${{ env.ACR_LOGIN_SERVER }}
+          # The ACR URL (e.g., myregistry.azurecr.io)
+
           username: ${{ secrets.ACR_USERNAME }}
+          # ACR admin username
+          # Found in Azure Portal: Container Registry → Access keys → Username
+          # Stored as GitHub secret for security
+
           password: ${{ secrets.ACR_PASSWORD }}
+          # ACR admin password
+          # Found in Azure Portal: Container Registry → Access keys → Password
+          # NEVER commit this to code (use secrets)
+          #
+          # Alternative authentication (more secure):
+          # Use Azure Service Principal or Managed Identity
+          # For now, admin credentials work for simple setups
 
       - name: Build and push backend image
         working-directory: ./user-management-backend
@@ -116,6 +299,26 @@ jobs:
                        -t ${{ env.ACR_LOGIN_SERVER }}/backend:latest .
           docker push ${{ env.ACR_LOGIN_SERVER }}/backend:${{ github.sha }}
           docker push ${{ env.ACR_LOGIN_SERVER }}/backend:latest
+        # Explanation: Build Docker image and push to ACR
+        #
+        # Docker build command breakdown:
+        # -t = tag (name) for the image
+        # ${{ env.ACR_LOGIN_SERVER }} = myregistry.azurecr.io
+        # /backend = image name
+        # :${{ github.sha }} = tag with commit hash (e.g., :a1b2c3d4)
+        # :latest = also tag as "latest"
+        # . = build context (current directory)
+        #
+        # Result: Two tags for same image
+        # myregistry.azurecr.io/backend:a1b2c3d4 (specific version)
+        # myregistry.azurecr.io/backend:latest (always newest)
+        #
+        # Why two tags:
+        # - latest: Easy for production (docker-compose pulls latest)
+        # - SHA: Rollback capability (can deploy specific version)
+        #
+        # Docker push: Upload images to ACR
+        # Other machines (Azure VM) can pull these images
 
       - name: Build and push frontend image
         working-directory: ./user-management-frontend
@@ -124,6 +327,9 @@ jobs:
                        -t ${{ env.ACR_LOGIN_SERVER }}/frontend:latest .
           docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ github.sha }}
           docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
+        # Same process as backend, but for frontend
+        # Builds from user-management-frontend/Dockerfile
+        # Tags: myregistry.azurecr.io/frontend:latest and :SHA
 
       - name: Build and push nginx image
         working-directory: ./nginx
@@ -132,13 +338,24 @@ jobs:
                        -t ${{ env.ACR_LOGIN_SERVER }}/nginx:latest .
           docker push ${{ env.ACR_LOGIN_SERVER }}/nginx:${{ github.sha }}
           docker push ${{ env.ACR_LOGIN_SERVER }}/nginx:latest
+        # Build custom Nginx image with our routing config
+        # Builds from nginx/Dockerfile
+        # Tags: myregistry.azurecr.io/nginx:latest and :SHA
 
-  # Job 4: Deploy to Azure VM
+  ############################################################################
+  # JOB 4: DEPLOY TO AZURE VM
+  # Purpose: SSH into Azure VM, pull latest images, restart containers
+  ############################################################################
   deploy:
     name: Deploy to Azure VM
     runs-on: ubuntu-latest
+
     needs: build-and-push
+    # Wait for images to be pushed to ACR before deploying
+    # Sequential: tests → build → deploy
+
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    # Only deploy on main/master branch pushes (not PRs)
 
     steps:
       - name: Checkout code (with submodules)
@@ -147,8 +364,13 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_TOKEN }}
+        # Need code to access docker-compose.yml for deployment
+
       - name: Check VM secrets
         id: vmsecrets
+        # Explanation: Check if VM deployment secrets are configured
+        # "id: vmsecrets" = gives this step an ID so other steps can reference it
+
         run: |
           HAVE_KEY=$([ -n "${{ secrets.VM_SSH_PRIVATE_KEY }}" ] && echo true || echo false)
           HAVE_HOST=$([ -n "${{ secrets.VM_HOST }}" ] && echo true || echo false)
@@ -158,24 +380,70 @@ jobs:
           else
             echo "have_vm=false" >> $GITHUB_OUTPUT
           fi
+        # Explanation: Check if all three VM secrets exist
+        # [ -n "..." ] = true if string is not empty
+        # && echo true || echo false = conditional assignment
+        #
+        # Sets output variable "have_vm" to true or false
+        # Other steps can check: steps.vmsecrets.outputs.have_vm
+        #
+        # Why this check:
+        # If secrets aren't configured, skip VM deployment gracefully
+        # Otherwise workflow would fail with confusing error messages
+
       - name: Sync and init submodules
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive
+        # Explanation: Ensure submodules are properly initialized
+        # "sync" = update submodule URLs from .gitmodules
+        # "update --init" = clone submodules if not already cloned
+        # "recursive" = handle nested submodules
+        #
+        # This ensures frontend/backend submodules are available
 
       - name: Setup SSH key
         if: steps.vmsecrets.outputs.have_vm == 'true'
+        # Only run if VM secrets are configured
+        # "if:" conditional execution based on previous step's output
+
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+        # Explanation: Prepare SSH authentication for VM access
+        #
+        # mkdir -p ~/.ssh:
+        # Create .ssh directory if it doesn't exist
+        # -p = no error if already exists
+        #
+        # echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key:
+        # Save private SSH key to file
+        # This key was generated: ssh-keygen -t rsa -b 4096
+        # Public key is on VM: ~/.ssh/authorized_keys
+        # Private key is in GitHub Secrets: VM_SSH_PRIVATE_KEY
+        #
+        # chmod 600 ~/.ssh/deploy_key:
+        # Set file permissions to read/write for owner only
+        # SSH requires this (refuses to use key if permissions are too open)
+        # 600 = owner can read/write, nobody else can access
+        #
+        # ssh-keyscan -H ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts:
+        # Add VM's SSH host key to known_hosts
+        # Prevents "Host key verification failed" error
+        # -H = hash the hostname (slight security improvement)
+        # Without this, SSH would prompt "Are you sure you want to connect?"
 
       - name: Deploy to VM
         if: steps.vmsecrets.outputs.have_vm == 'true'
+        # Only deploy if secrets are configured
+
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USERNAME }}
+        # Make secrets available as environment variables for this step
+
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $VM_USER@$VM_HOST << 'ENDSSH'
             set -e
@@ -207,9 +475,69 @@ jobs:
             
             echo "🎉 Deployment completed successfully!"
           ENDSSH
+        # Explanation: SSH into VM and run deployment commands
+        #
+        # ssh -i ~/.ssh/deploy_key:
+        # Use our private key for authentication
+        # -i = identity file (private key)
+        #
+        # -o StrictHostKeyChecking=no:
+        # Don't prompt for host key verification
+        # Safe here because we added host key to known_hosts
+        #
+        # $VM_USER@$VM_HOST:
+        # Connect to VM (e.g., azureuser@20.30.40.50)
+        #
+        # << 'ENDSSH' ... ENDSSH:
+        # Heredoc syntax - everything between these markers runs on VM
+        # Single quotes prevent variable expansion on GitHub runner
+        # Variables like ${{ secrets.ACR_NAME }} expand on VM
+        #
+        # set -e:
+        # Exit immediately if any command fails
+        # Prevents continuing deployment if something breaks
+        #
+        # cd ~/app:
+        # Go to app directory (where docker-compose.yml is)
+        #
+        # az login --identity:
+        # Authenticate Azure CLI using VM's Managed Identity
+        # Managed Identity = VM's permission to access Azure resources
+        # No passwords needed (Azure handles authentication)
+        #
+        # az acr login --name ...:
+        # Authenticate Docker with ACR
+        # After this, docker pull from ACR works without password
+        #
+        # docker-compose pull:
+        # Download latest images from ACR
+        # Pulls: backend:latest, frontend:latest, nginx:latest
+        #
+        # docker-compose down:
+        # Stop and remove old containers
+        # Data in volumes persists (MongoDB/Redis data safe)
+        #
+        # docker-compose up -d:
+        # Start new containers in detached mode (-d = background)
+        # Uses images just pulled from ACR
+        #
+        # sleep 30:
+        # Wait for containers to start and become healthy
+        # Health checks need time to pass
+        #
+        # docker-compose ps:
+        # Show status of all containers
+        # Helps diagnose if something didn't start
+        #
+        # curl -f http://localhost/health:
+        # Test if application is responding
+        # -f = fail silently if HTTP error
+        # || echo ... = don't fail deployment if health check not ready yet
 
       - name: Verify Deployment
         if: steps.vmsecrets.outputs.have_vm == 'true'
+        # Additional verification step
+
         env:
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USERNAME }}
@@ -232,22 +560,63 @@ jobs:
               exit 1
             fi
           ENDSSH
+        # Explanation: Verify deployment succeeded
+        #
+        # docker-compose ps -q:
+        # List container IDs quietly (just IDs, no details)
+        # -q = quiet mode
+        #
+        # | wc -l:
+        # Count number of lines = number of containers
+        # Should be 5 (nginx, frontend, backend, mongodb, redis)
+        #
+        # grep -c "Up":
+        # Count how many containers have "Up" status
+        # || true = don't fail if grep finds nothing
+        #
+        # Comparison:
+        # If RUNNING == CONTAINERS, all containers are up → success
+        # If RUNNING < CONTAINERS, some failed to start → fail deployment
+        #
+        # exit 1:
+        # Marks deployment as failed in GitHub Actions
+        # Triggers notifications, stops workflow
 
       - name: Cleanup SSH key
         if: always()
+        # Always run, even if previous steps failed
+        # "always()" = run in all cases (success, failure, cancellation)
+
         run: |
           rm -f ~/.ssh/deploy_key || true
+        # Explanation: Delete SSH private key for security
+        # Don't leave sensitive keys on GitHub runner
+        # || true = don't fail if file doesn't exist
+
       - name: Skip notice (no VM secrets)
         if: steps.vmsecrets.outputs.have_vm != 'true'
+        # Run this if VM secrets NOT configured
+
         run: |
           echo "Skipping VM deploy: VM secrets not configured.\nAdd VM_SSH_PRIVATE_KEY, VM_HOST, VM_USERNAME to enable."
+        # Informative message explaining why deployment was skipped
+        # Helps developers understand what's missing
 
-  # Job 5: Send Notification (Optional)
+  ############################################################################
+  # JOB 5: SEND DEPLOYMENT NOTIFICATION
+  # Purpose: Report final status of the pipeline
+  ############################################################################
   notify:
     name: Send Deployment Notification
     runs-on: ubuntu-latest
+
     needs: [backend-tests, frontend-build, build-and-push, deploy]
+    # Wait for ALL previous jobs to complete
+    # Runs regardless of success/failure
+
     if: always()
+    # Run even if previous jobs failed
+    # Allows reporting failures, not just successes
 
     steps:
       - name: Deployment Status
@@ -271,3 +640,93 @@ jobs:
             echo "❌ Deployment failed!"
             exit 1
           fi
+        # Explanation: Generate deployment summary
+        #
+        # needs.{job_name}.result:
+        # Access result of previous job
+        # Possible values: success, failure, cancelled, skipped
+        #
+        # Logic flow:
+        # 1. If tests failed → report failure
+        # 2. If build/deploy skipped (PR) → inform, but don't fail
+        # 3. If deploy succeeded → report success with URL
+        # 4. If deploy failed → report failure
+        #
+        # exit 1 vs exit 0:
+        # exit 1 = mark job as failed (red X in GitHub)
+        # exit 0 = mark job as success (green check in GitHub)
+        #
+        # This step could be extended to:
+        # - Send Slack notification
+        # - Post to Discord webhook
+        # - Send email
+        # - Update deployment status in project management tool
+        #
+        # Example Slack notification (add step):
+        # - name: Slack Notification
+        #   uses: 8398a7/action-slack@v3
+        #   with:
+        #     status: ${{ job.status }}
+        #     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+################################################################################
+# REQUIRED GITHUB SECRETS (Configure in Repository Settings → Secrets)
+#
+# Azure Container Registry:
+# - ACR_NAME: Your ACR name (e.g., "myregistry")
+# - ACR_USERNAME: Admin username from ACR Access Keys
+# - ACR_PASSWORD: Admin password from ACR Access Keys
+#
+# Azure VM Deployment:
+# - VM_HOST: VM IP address or hostname (e.g., "20.30.40.50")
+# - VM_USERNAME: SSH username (e.g., "azureuser")
+# - VM_SSH_PRIVATE_KEY: Private SSH key (generate with ssh-keygen)
+#
+# Submodules (if private repos):
+# - SUBMODULES_TOKEN: GitHub Personal Access Token with repo access
+#
+# HOW TO SET UP:
+# 1. Go to GitHub repository
+# 2. Settings → Secrets and variables → Actions
+# 3. Click "New repository secret"
+# 4. Add each secret above
+################################################################################
+
+################################################################################
+# TYPICAL WORKFLOW EXECUTION TIMES:
+# - Backend Tests: 2-3 minutes
+# - Frontend Build: 3-5 minutes
+# - Build & Push: 5-8 minutes (parallel Docker builds)
+# - Deploy: 2-3 minutes (pull images, restart containers)
+# - Total: ~12-15 minutes for full pipeline
+#
+# For Pull Requests (tests only): ~5-8 minutes
+################################################################################
+
+################################################################################
+# TROUBLESHOOTING COMMON ISSUES:
+#
+# 1. "Submodule not found":
+#    - Check SUBMODULES_TOKEN has repo access
+#    - Verify submodule URLs in .gitmodules
+#
+# 2. "Docker push unauthorized":
+#    - Verify ACR_USERNAME and ACR_PASSWORD are correct
+#    - Check ACR admin user is enabled in Azure Portal
+#
+# 3. "SSH connection failed":
+#    - Verify VM_HOST is correct and VM is running
+#    - Check VM_SSH_PRIVATE_KEY matches public key on VM
+#    - Ensure VM firewall allows SSH (port 22)
+#
+# 4. "Containers not starting on VM":
+#    - SSH to VM manually: ssh user@host
+#    - Check logs: docker-compose logs
+#    - Verify .env file exists with correct variables
+#    - Check disk space: df -h
+#
+# 5. "Tests failing":
+#    - Run tests locally first: npm test
+#    - Check package versions match
+#    - Verify test database connection strings
+################################################################################

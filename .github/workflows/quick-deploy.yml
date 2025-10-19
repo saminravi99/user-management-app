@@ -1,48 +1,122 @@
+################################################################################
+# QUICK DEPLOY WORKFLOW FOR EMERGENCY FIXES
+#
+# WHY: Sometimes you need to deploy a single service immediately without
+#      waiting for full CI/CD pipeline (tests, full build, etc.)
+#      Perfect for: hotfixes, urgent bug fixes, configuration changes
+#
+# WHAT: Manual deployment workflow that:
+#       - Lets you choose which service to deploy (all/backend/frontend/nginx)
+#       - Builds only that service's Docker image
+#       - Pushes to ACR
+#       - Deploys to VM instantly
+#       - Skips tests (use responsibly!)
+#
+# HOW: Triggered manually from GitHub Actions UI
+#      Go to: Actions tab → Quick Deploy → Run workflow → Select service
+#
+# WHERE: Runs on GitHub's cloud runner, deploys to your Azure VM
+#
+# WHEN TO USE:
+# ✅ Production is down, need emergency fix NOW
+# ✅ Small config change in nginx only
+# ✅ Hotfix in backend, frontend unchanged
+# ✅ You already tested locally
+#
+# WHEN NOT TO USE:
+# ❌ Regular feature deployment (use main CI/CD pipeline)
+# ❌ Untested code changes
+# ❌ Major refactoring
+# ❌ Database schema changes (needs careful coordination)
+#
+# SPEED COMPARISON:
+# Full CI/CD: ~12-15 minutes (tests + build all + deploy)
+# Quick Deploy (single service): ~3-5 minutes (build one + deploy)
+# Quick Deploy (all services): ~8-10 minutes (build all + deploy, no tests)
+################################################################################
+
 name: Quick Deploy
 
-# Manual deployment trigger for emergency fixes.
+################################################################################
+# TRIGGER - Manual workflow dispatch (button in GitHub UI)
+################################################################################
 on:
   workflow_dispatch:
+    # Explanation: This workflow only runs when manually triggered
+    # NOT triggered by pushes or pull requests
+    # User must click "Run workflow" button in GitHub Actions tab
+
     inputs:
+      # Explanation: User inputs shown in GitHub UI when triggering workflow
+
       service:
         description: "Service to deploy (all/backend/frontend/nginx)"
+        # Text shown in GitHub UI above dropdown
+
         required: true
+        # User MUST select a service (can't leave blank)
+
         default: "all"
+        # Pre-selected value when workflow is opened
+
         type: choice
+        # Creates dropdown menu (not text input)
+
         options:
           - all
           - backend
           - frontend
           - nginx
+        # Available choices in dropdown
+        # "all" = deploy everything (faster than full CI/CD, but no tests)
+        # Individual services = deploy just one (super fast)
 
+################################################################################
+# JOBS - Single job for quick deployment
+################################################################################
 jobs:
   quick-deploy:
     name: Quick Deploy to Azure
     runs-on: ubuntu-latest
+    # Single job that does everything: build, push, deploy
 
     steps:
+      ########################################################################
+      # STEP 1: Get the code
+      ########################################################################
       - name: Checkout code (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_TOKEN }}
+        # Clone repository and submodules (same as main CI/CD)
+
       - name: Sync and init submodules
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive
+        # Ensure submodules are properly initialized
 
+      ########################################################################
+      # STEP 2: Login to Azure Container Registry
+      ########################################################################
       - name: Log in to Azure Container Registry (admin creds)
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_NAME }}.azurecr.io
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
+        # Authenticate with ACR (need this to push images)
 
+      ########################################################################
+      # STEP 3: Build and push selected service(s)
+      ########################################################################
       - name: Build and push selected service
         run: |
           SERVICE="${{ github.event.inputs.service }}"
           ACR_SERVER="${{ secrets.ACR_NAME }}.azurecr.io"
+          # Get user's selection and ACR URL
 
           build_and_push() {
             local service=$1
@@ -53,6 +127,12 @@ jobs:
             docker push $ACR_SERVER/$service:latest
             cd -
           }
+          # Explanation: Bash function to build and push a service
+          # local service=$1 = first argument (service name)
+          # local dir=$2 = second argument (directory path)
+          # docker build -t = build and tag image
+          # docker push = upload to ACR
+          # cd - = return to previous directory
 
           if [ "$SERVICE" == "all" ]; then
             build_and_push "backend" "./user-management-backend"
@@ -65,14 +145,32 @@ jobs:
           elif [ "$SERVICE" == "nginx" ]; then
             build_and_push "nginx" "./nginx"
           fi
+          # Explanation: Build only what user selected
+          # if "all" = build all three services (8-10 mins)
+          # if specific service = build only that one (3-5 mins)
+          #
+          # Why selective building:
+          # If you only changed nginx config, no need to rebuild backend/frontend
+          # Saves time and compute resources
+          #
+          # Example scenarios:
+          # - Fixed nginx routing bug → Deploy nginx only (3 mins)
+          # - Hotfix in backend API → Deploy backend only (4 mins)
+          # - New frontend feature → Deploy frontend only (4 mins)
+          # - Major release → Deploy all (10 mins)
 
+      ########################################################################
+      # STEP 4: Deploy to Azure VM
+      ########################################################################
       - name: Deploy to VM
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          # Set up SSH authentication (same as main CI/CD)
 
           SERVICE="${{ github.event.inputs.service }}"
+          # Get user's selection again (needed inside SSH session)
 
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.VM_USERNAME }}@${{ secrets.VM_HOST }} << ENDSSH
@@ -82,6 +180,7 @@ jobs:
               echo "📥 Logging into ACR..."
               az login --identity
               az acr login --name ${{ secrets.ACR_NAME }}
+              # Authenticate VM with ACR
               
               if [ "$SERVICE" == "all" ]; then
                 echo "🔄 Deploying all services..."
@@ -94,17 +193,137 @@ jobs:
                 docker-compose up -d --force-recreate $SERVICE
                 docker-compose restart nginx
               fi
+              # Explanation: Smart deployment based on selection
+              #
+              # If "all" selected:
+              # - Pull all new images from ACR
+              # - Stop all containers
+              # - Start all containers with new images
+              # Result: Complete refresh (all services updated)
+              #
+              # If specific service selected:
+              # - Pull only that service's image
+              # - Recreate only that service's container (--force-recreate)
+              # - Restart nginx (to re-establish proxy connections)
+              #
+              # Why restart nginx for single service:
+              # Nginx maintains connections to backend/frontend
+              # When you restart backend, nginx needs to reconnect
+              # Without restart, nginx might keep trying old connections
+              #
+              # --force-recreate:
+              # Ensures container is recreated even if config unchanged
+              # Important: forces Docker to use the new image
+              # Without this, might use cached container with old image
               
               sleep 20
+              # Wait for containers to stabilize
+              # 20s shorter than main CI/CD (30s) because less risky (single service)
               
               echo "✅ Deployment complete!"
               docker-compose ps
+              # Show status of all containers
           ENDSSH
 
           rm -f ~/.ssh/deploy_key
+          # Clean up SSH key for security
 
+      ########################################################################
+      # STEP 5: Report success
+      ########################################################################
       - name: Deployment Summary
         run: |
           echo "✅ Quick deployment completed!"
           echo "🎯 Service: ${{ github.event.inputs.service }}"
           echo "🌐 URL: http://${{ secrets.VM_HOST }}"
+        # Simple success message
+        # Shows which service was deployed and application URL
+
+################################################################################
+# HOW TO USE THIS WORKFLOW:
+#
+# 1. Go to GitHub repository
+# 2. Click "Actions" tab
+# 3. Select "Quick Deploy" from left sidebar
+# 4. Click "Run workflow" button (top right)
+# 5. Select service from dropdown:
+#    - "all" = deploy everything
+#    - "backend" = only backend
+#    - "frontend" = only frontend
+#    - "nginx" = only nginx
+# 6. Click green "Run workflow" button
+# 7. Watch progress in real-time
+#
+# TYPICAL USE CASES:
+#
+# Scenario 1: Production bug in backend API
+# - Fix bug locally
+# - Test locally
+# - Commit and push to main
+# - Run Quick Deploy → select "backend"
+# - 3-4 minutes later: Fix is live
+#
+# Scenario 2: Nginx routing configuration change
+# - Update nginx config file
+# - Test with docker-compose locally
+# - Commit and push
+# - Run Quick Deploy → select "nginx"
+# - 2-3 minutes later: New config live
+#
+# Scenario 3: Frontend UI hotfix
+# - Fix React component
+# - Test in development
+# - Commit and push
+# - Run Quick Deploy → select "frontend"
+# - 4-5 minutes later: Fix is live
+#
+# Scenario 4: Multiple changes across services
+# - Make changes to multiple services
+# - Want to skip tests (already tested locally)
+# - Run Quick Deploy → select "all"
+# - 8-10 minutes later: Everything deployed
+#   (Faster than full CI/CD which takes 12-15 mins)
+################################################################################
+
+################################################################################
+# SAFETY CONSIDERATIONS:
+#
+# ⚠️  This workflow SKIPS TESTS!
+# - No linting checks
+# - No unit tests
+# - No build verification for other services
+# - Use only when you're confident code works
+#
+# ⚠️  No automatic rollback!
+# - If deployment breaks production, you need to:
+#   1. Revert commit in git
+#   2. Run Quick Deploy again with reverted code
+#   OR
+#   1. SSH to VM manually
+#   2. docker-compose down && docker-compose up -d
+#
+# ⚠️  Database migrations:
+# - If backend changes include database migrations
+# - Ensure migrations are backwards compatible
+# - Or run migrations manually before deploying
+#
+# ✅ Best practice:
+# - Use Quick Deploy for truly urgent fixes only
+# - For regular deployments, use main CI/CD pipeline
+# - Always test locally before deploying
+# - Monitor application logs after deployment:
+#   ssh user@vm
+#   cd ~/app
+#   docker-compose logs -f
+################################################################################
+
+################################################################################
+# REQUIRED SECRETS (same as main CI/CD):
+# - ACR_NAME
+# - ACR_USERNAME
+# - ACR_PASSWORD
+# - VM_HOST
+# - VM_USERNAME
+# - VM_SSH_PRIVATE_KEY
+# - SUBMODULES_TOKEN (if using private submodules)
+################################################################################

@@ -1,28 +1,91 @@
-# Docker Compose - User Management Application
-# 5 Services: Nginx, Frontend, Backend, MongoDB, Redis
+################################################################################
+# DOCKER COMPOSE CONFIGURATION FOR USER MANAGEMENT APPLICATION
+#
+# WHY: Instead of managing 5 separate containers manually, Docker Compose
+#      lets us define, connect, and orchestrate all services in one file
+#
+# WHAT: This defines a complete multi-container application with:
+#       - Nginx (reverse proxy, port 80)
+#       - Frontend (Next.js React app, port 3000)
+#       - Backend (Node.js API, port 5000)
+#       - MongoDB (database, port 27017)
+#       - Redis (cache/session store, port 6379)
+#
+# HOW: Docker Compose reads this file and:
+#      - Creates Docker networks so containers can talk to each other
+#      - Builds Docker images from Dockerfiles
+#      - Starts containers in correct order (dependencies first)
+#      - Monitors health checks and restarts failed containers
+#      - Mounts volumes for persistent data
+#
+# WHERE: Run on your local machine for development, or on a server for production
+#        All containers run on the same Docker host
+#
+# WHEN: Start everything with: docker-compose up
+#       Stop everything with: docker-compose down
+#
+# NETWORK ARCHITECTURE:
+# - frontend-network: Connects Nginx ↔ Frontend
+# - backend-network: Connects Nginx ↔ Backend ↔ MongoDB/Redis
+# - This isolation ensures Frontend can't directly access database (security)
+################################################################################
 
+################################################################################
+# SERVICES - Define each container in our application
+################################################################################
 services:
-  # ===========================================
-  # NGINX - Reverse Proxy
-  # Routes: /api/* → backend, / → frontend
-  # ===========================================
+  ############################################################################
+  # NGINX - Reverse Proxy and Entry Point
+  ############################################################################
   nginx:
+    # Explanation: The front door of your application
+    # Every user request hits Nginx first, which then routes to frontend or backend
+    # Acts as: load balancer, SSL terminator, static file server, security layer
+
     build:
       context: ./nginx
+      # Build from nginx directory (contains Dockerfile and config files)
       dockerfile: Dockerfile
+      # Use our custom Dockerfile with optimized nginx config
+
     container_name: nginx-proxy
+    # Human-readable name for easier log access: docker logs nginx-proxy
+
     ports:
       - "80:80"
+      # Explanation: THE main port users connect to
+      # Host port 80 → Container port 80
+      # When user types http://yoursite.com, browser connects to port 80
+      # This is the only port end-users need (all other services are internal)
+
       - "443:443"
+      # HTTPS port for production with SSL/TLS certificate
+      # Currently unused (no SSL configured yet)
+      # When you add Let's Encrypt: users connect on 443, Nginx handles decryption
+
     depends_on:
       frontend:
         condition: service_healthy
+        # Wait for frontend to be healthy before starting Nginx
+        # Otherwise Nginx can't proxy requests (upstream unavailable error)
       backend:
         condition: service_healthy
+        # Wait for backend to be healthy too
+        # Ensures all upstreams are ready when Nginx starts
+
     networks:
       - frontend-network
+      # Connected to frontend network (can reach frontend:3000)
       - backend-network
+      # Connected to backend network (can reach backend:5000)
+      # Nginx is the bridge between both networks
+
     restart: unless-stopped
+    # Explanation: Auto-restart policy
+    # If Nginx crashes → restart automatically
+    # If you manually stop it → stay stopped
+    # Good for both development and production
+
     healthcheck:
       test:
         [
@@ -33,10 +96,17 @@ services:
           "--spider",
           "http://localhost/health",
         ]
+      # Check /health endpoint (defined in our nginx config)
+      # Verifies Nginx is running and responding to requests
+
       interval: 30s
+      # Check every 30 seconds
       timeout: 5s
+      # Each check must complete within 5 seconds
       retries: 3
+      # Must fail 3 times before marking unhealthy
       start_period: 10s
+      # Grace period: don't check for first 10 seconds (Nginx starts quickly)
 
   # ===========================================
   # FRONTEND - Next.js Application
